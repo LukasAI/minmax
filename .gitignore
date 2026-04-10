@@ -1,0 +1,9 @@
+node_modules
+.next
+out
+.env.local
+npm-debug.log*
+
+# Python cache
+__pycache__/
+*.pyc
