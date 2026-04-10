@@ -164,7 +164,7 @@ def progress_page() -> None:
 
 st.title("Min Max Log • Streamlit")
 st.caption("Local-first workout logging (Streamlit edition)")
-st.info("Luka Dovah")
+st.info("Luka Dovah 2")
 
 page = st.sidebar.radio("Navigate", ["Home", "Workout", "Progress"])
 selected = st.sidebar.selectbox(
