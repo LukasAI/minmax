@@ -31,10 +31,17 @@ def days_ago_label(d: str) -> str:
     return f"{delta} days ago"
 
 
-def calc_tonnage(weight: float | None, reps: int | None, sets: int) -> float:
+def calc_tonnage(weight: float | None, reps: int | None) -> float:
     if not weight or not reps:
         return 0.0
-    return float(weight) * int(reps) * sets
+    return float(weight) * int(reps)
+
+
+def set_value_text(last_rows, exercise_id: str, set_index: int) -> str:
+    row = next((r for r in last_rows if r["exercise_template_id"] == exercise_id and int(r["set_index"]) == set_index), None)
+    if not row or row["skipped"] == 1:
+        return "Skipped"
+    return f"{row['weight']} kg × {row['reps']}"
 
 
 def workout_page(workout_id: str) -> None:
@@ -48,14 +55,14 @@ def workout_page(workout_id: str) -> None:
         if not last_log:
             st.info("No last time data yet")
         else:
-            completed = sum(1 for r in last_rows if r["skipped"] == 0)
+            completed = len([r for r in last_rows if r["skipped"] == 0])
             st.caption(f"Last performed: {last_log['log_date']} ({days_ago_label(last_log['log_date'])})")
             st.caption(f"Workout tonnage: {last_log['total_tonnage']:.0f} kg")
-            st.caption(f"Exercises completed: {completed}/{len(exercises)}")
+            st.caption(f"Completed sets: {completed}/{len(exercises) * 2}")
             for e in exercises:
-                row = next((r for r in last_rows if r["exercise_template_id"] == e.id), None)
-                text = "Skipped" if not row or row["skipped"] == 1 else f"{row['weight']} kg × {row['reps']}"
-                st.write(f"**{e.exercise_name}** — {text}")
+                st.write(
+                    f"**{e.exercise_name}** — Set 1: {set_value_text(last_rows, e.id, 1)} | Set 2: {set_value_text(last_rows, e.id, 2)}"
+                )
 
     draft = get_today_draft(workout_id)
     entries = []
@@ -63,39 +70,64 @@ def workout_page(workout_id: str) -> None:
 
     st.caption("Autosave: local draft + SQLite sync on every edit")
     for e in exercises:
-        prev = next((r for r in last_rows if r["exercise_template_id"] == e.id and r["skipped"] == 0), None)
         best = get_best_tonnage(workout_id, e.id)
-
-        st.markdown(f"### {e.exercise_name}")
-        if prev and last_log:
-            last_text = f"{prev['weight']} kg × {prev['reps']} ({days_ago_label(last_log['log_date'])})"
+        if last_log:
+            last_text = (
+                f"Set 1: {set_value_text(last_rows, e.id, 1)} | "
+                f"Set 2: {set_value_text(last_rows, e.id, 2)} ({days_ago_label(last_log['log_date'])})"
+            )
         else:
             last_text = "No data yet"
+
+        st.markdown(f"### {e.exercise_name}")
         st.caption(f"Last: {last_text}")
         st.caption(f"Best tonnage: {f'{best:.0f} kg' if best else 'No data yet'}")
 
-        c1, c2 = st.columns(2)
-        default_w = draft.get(e.id, (None, None))[0]
-        default_r = draft.get(e.id, (None, None))[1]
-
-        weight = c1.number_input(f"Weight (kg) · {e.exercise_name}", min_value=0.0, value=float(default_w or 0.0), key=f"w_{e.id}")
-        reps = c2.number_input(f"Reps · {e.exercise_name}", min_value=0, value=int(default_r or 0), key=f"r_{e.id}")
-
-        weight_val = weight if weight > 0 else None
-        reps_val = reps if reps > 0 else None
-        tonnage = calc_tonnage(weight_val, reps_val, e.default_set_count)
-        skipped = weight_val is None or reps_val is None
-        total += tonnage
-
-        entries.append(
-            {
-                "exercise_template_id": e.id,
-                "weight": weight_val,
-                "reps": reps_val,
-                "tonnage": tonnage,
-                "skipped": skipped,
-            }
+        selected_set = st.radio(
+            f"Pick active set · {e.exercise_name}",
+            options=[1, 2],
+            horizontal=True,
+            key=f"active_set_{e.id}",
+            format_func=lambda s: f"Set {s}",
         )
+
+        for set_idx in [1, 2]:
+            defaults = draft.get(e.id, {}).get(set_idx, (None, None))
+            is_active = selected_set == set_idx
+            with st.container(border=True):
+                st.markdown(f"**Set {set_idx}**{' ✅' if is_active else ''}")
+                c1, c2 = st.columns(2)
+                weight = c1.number_input(
+                    f"Weight (kg) · {e.exercise_name} · Set {set_idx}",
+                    min_value=0.0,
+                    value=float(defaults[0] or 0.0),
+                    key=f"w_{e.id}_{set_idx}",
+                    disabled=not is_active,
+                )
+                reps = c2.number_input(
+                    f"Reps · {e.exercise_name} · Set {set_idx}",
+                    min_value=0,
+                    value=int(defaults[1] or 0),
+                    key=f"r_{e.id}_{set_idx}",
+                    disabled=not is_active,
+                )
+
+                weight_val = weight if weight > 0 else None
+                reps_val = reps if reps > 0 else None
+                tonnage = calc_tonnage(weight_val, reps_val)
+                skipped = weight_val is None or reps_val is None
+                total += tonnage
+
+                entries.append(
+                    {
+                        "exercise_template_id": e.id,
+                        "set_index": set_idx,
+                        "weight": weight_val,
+                        "reps": reps_val,
+                        "tonnage": tonnage,
+                        "skipped": skipped,
+                    }
+                )
 
     upsert_draft(workout_id, date.today().isoformat(), entries, total)
     st.success(f"Saved draft • Workout tonnage: {total:.0f} kg")
@@ -113,12 +145,15 @@ def progress_page() -> None:
         st.info("No completed logs yet.")
         return
 
-    df = pd.DataFrame(rows, columns=["log_date", "region_group", "body_part", "tonnage"])
+    df = pd.DataFrame(rows)
     totals = df.groupby("log_date", as_index=False)["tonnage"].sum()
     st.plotly_chart(px.line(totals, x="log_date", y="tonnage", markers=True, title="Total tonnage"), use_container_width=True)
 
     regional = df.pivot_table(index="log_date", columns="region_group", values="tonnage", aggfunc="sum", fill_value=0).reset_index()
-    st.plotly_chart(px.bar(regional, x="log_date", y=[c for c in regional.columns if c != "log_date"], barmode="stack", title="Upper vs Lower"), use_container_width=True)
+    st.plotly_chart(
+        px.bar(regional, x="log_date", y=[c for c in regional.columns if c != "log_date"], barmode="stack", title="Upper vs Lower"),
+        use_container_width=True,
+    )
 
     body = df.groupby("body_part", as_index=False)["tonnage"].sum().sort_values("tonnage", ascending=False)
     body["pct"] = (body["tonnage"] / body["tonnage"].sum() * 100).round(1)
@@ -129,9 +164,14 @@ def progress_page() -> None:
 
 st.title("Min Max Log • Streamlit")
 st.caption("Local-first workout logging (Streamlit edition)")
+st.info("Luka Dovah")
 
 page = st.sidebar.radio("Navigate", ["Home", "Workout", "Progress"])
-selected = st.sidebar.selectbox("Workout template", options=[w.id for w in WORKOUT_TEMPLATES], format_func=lambda x: next(w.name for w in WORKOUT_TEMPLATES if w.id == x))
+selected = st.sidebar.selectbox(
+    "Workout template",
+    options=[w.id for w in WORKOUT_TEMPLATES],
+    format_func=lambda x: next(w.name for w in WORKOUT_TEMPLATES if w.id == x),
+)
 
 if page == "Home":
     st.subheader("Workouts")
